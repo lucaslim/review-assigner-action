@@ -6,26 +6,22 @@ import { parseRotation } from "../src/config.js";
 const config = (source = "team: frontend") => parseRotation(source);
 const select = (overrides = {}) => selectReviewers({
   members: ["alice", "bob", "carol"],
-  excluded: new Set(), load: new Map(), lastRequestedAt: new Map(),
+  excluded: new Set(), load: new Map(), random: () => 0.999,
   count: config().count, ...overrides,
 });
 
 test("lowest current load wins", () => {
   assert.deepEqual(select({ load: new Map([["alice", 2], ["bob", 0], ["carol", 1]]) }), ["bob"]);
 });
-test("equal load uses the least recently requested reviewer", () => {
-  assert.deepEqual(select({ lastRequestedAt: new Map([
-    ["alice", new Date("2026-04-03")], ["bob", new Date("2026-04-01")],
-    ["carol", new Date("2026-04-02")],
-  ]) }), ["bob"]);
+test("equal load uses the injected random source", () => {
+  assert.deepEqual(select({ random: () => 0.999 }), ["alice"]);
+  assert.deepEqual(select({ random: () => 0 }), ["bob"]);
 });
-test("never requested wins before an older request", () => {
-  assert.deepEqual(select({ lastRequestedAt: new Map([
-    ["alice", new Date("2026-04-01")], ["carol", new Date("2026-04-02")],
-  ]) }), ["bob"]);
+test("load takes priority over random order", () => {
+  assert.deepEqual(select({ random: () => 0, load: new Map([["bob", 1], ["carol", 2]]) }), ["alice"]);
 });
-test("login breaks otherwise equal ranks deterministically", () => {
-  assert.deepEqual(select({ members: ["carol", "bob", "alice"] }), ["alice"]);
+test("fixed random sources use a stable candidate pre-order", () => {
+  assert.deepEqual(select({ members: ["carol", "bob", "alice"], random: () => 0 }), ["bob"]);
 });
 test("excluded logins are not picked regardless of case", () => {
   assert.deepEqual(select({ excluded: new Set(["ALICE", "bob"]) }), ["carol"]);
