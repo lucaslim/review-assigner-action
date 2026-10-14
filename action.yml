@@ -10,7 +10,7 @@ inputs:
     description: "Label that triggers review assignment"
     default: "needs-review"
   config-path:
-    description: "Path to the YAML rotation config on the PR branch, falling back to the base branch"
+    description: "Path to the YAML rotation config on the base branch; changes take effect once merged. Falls back to the PR head commit only on 404"
     default: ".github/review-assigner.yml"
 
 outputs:
