@@ -1,13 +1,10 @@
 name: Release
 
 on:
-  push:
-    branches: [main]
-    paths: [src/**, action.yml, package.json, yarn.lock]
   workflow_dispatch:
     inputs:
       version:
-        description: Release version (X.Y.Z), greater than the latest; blank releases the next patch
+        description: Release version (X.Y.Z), greater than the latest; blank derives it from commit titles since the latest release
         required: false
         type: string
 
@@ -35,6 +32,7 @@ jobs:
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -48,7 +46,7 @@ jobs:
       - run: yarn build
       - name: Compute version
         run: |
-          VERSION="$(git ls-remote --tags --refs origin | .github/scripts/next-version.sh "${REQUESTED_VERSION}")"
+          VERSION="$(.github/scripts/next-version.sh "${REQUESTED_VERSION}")"
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
           echo "Releasing ${VERSION}"
       - name: Fail if the tag exists
@@ -57,20 +55,8 @@ jobs:
             echo "Tag ${VERSION} already exists."
             exit 1
           fi
-      # Dependency-only merges (e.g. devDependencies) can leave the shipped files
-      # identical; a dispatched version always releases.
-      - name: Skip if the bundle is unchanged
-        if: github.event_name == 'push'
-        run: |
-          latest="$(git ls-remote --tags --refs origin | sed 's#.*refs/tags/##' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
-          git fetch --depth=1 origin "refs/tags/${latest}:refs/tags/${latest}"
-          if .github/scripts/bundle-unchanged.sh "${latest}"; then
-            echo "Bundle unchanged since ${latest}; skipping release"
-            echo "SKIP=true" >> "$GITHUB_ENV"
-          fi
       # The bundle is committed only on a release commit that no branch contains.
       - name: Commit the bundle and tag
-        if: env.SKIP != 'true'
         run: |
           git checkout --detach
           git config user.name "github-actions[bot]"
@@ -80,13 +66,11 @@ jobs:
           git tag "${VERSION}"
           git tag -f "${VERSION%%.*}"
       - name: Push tags
-        if: env.SKIP != 'true'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "${VERSION}" "+${VERSION%%.*}"
       - name: Create release
-        if: env.SKIP != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "${VERSION}" --verify-tag --generate-notes
