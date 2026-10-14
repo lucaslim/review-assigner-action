@@ -1,6 +1,6 @@
 # Review assigner action
 
-Adding `needs-review` to a non-draft PR requests review from the least-loaded eligible member of a GitHub team. The label stays on the PR. Remove and re-add it to request another person. Each label addition requests up to `count` new reviewers. Marking a draft PR ready for review also requests reviewers if it has the label.
+Adding `needs-review` to a non-draft PR requests review from the least-loaded eligible member of a GitHub team. The label stays on the PR. Remove and re-add it to request another person. Each label addition requests up to `count` new reviewers. Marking a draft PR ready for review also requests reviewers if it has the label. If any team member other than the author is already requested or has submitted a review, the ready event requests nobody. It logs those members and posts no comment. Re-adding the label still requests more reviewers.
 
 Load is the number of open PRs in this repository currently requesting that person's review. Equal loads use a uniform random tie-break.
 
@@ -12,9 +12,9 @@ The author, event sender, bots, excluded logins, current requested reviewers, an
 | --- | --- | --- | --- |
 | `token` | Yes | | GitHub App installation token. |
 | `label` | No | `needs-review` | Label that triggers assignment. |
-| `config-path` | No | `.github/review-assigner.yml` | YAML rotation config path on the PR branch, falling back to the base branch. |
+| `config-path` | No | `.github/review-assigner.yml` | YAML rotation config path on the base branch, falling back to the PR head commit only on 404. |
 
-The `reviewers` output contains comma-separated requested logins. It is empty when the event is ignored, the PR is a draft, or nobody is eligible. API errors and invalid configuration fail the run.
+The `reviewers` output contains comma-separated requested logins. It is empty when the event is ignored, the PR is a draft, a ready event already has an assigned team member, or nobody is eligible. API errors and invalid configuration fail the run.
 
 ## Config file
 
@@ -31,7 +31,7 @@ exclude:
 
 `team` is required and must be a team slug in the repository owner's organization, not an organization/team path. `count` defaults to `1` and must be a positive safe integer. If fewer members are eligible, the action requests all of them. `exclude` defaults to an empty list and must be a list of logins, matched without case sensitivity.
 
-The action reads the file at the fresh PR head commit, after checking that the PR is not a draft. If the head returns 404, the action reads the file at the PR's base branch. The log names the ref used. If both refs return 404, the run fails with the path and both refs. Other API errors fail without falling back. Empty files, non-mapping documents, unknown keys, and wrong value types fail the run before any review request.
+The action reads the file at the PR's base branch, after checking that the PR is not a draft. Rotation changes take effect once merged into the base branch. Only if the base returns 404 does the action read the file at the fresh PR head commit. This fallback lets a PR introduce the config file before it merges. The log names the ref used. If both refs return 404, the run fails with the path and both refs. Other API errors fail without falling back. Empty files, non-mapping documents, unknown keys, and wrong value types fail the run before any review request.
 
 ## Required app permissions
 

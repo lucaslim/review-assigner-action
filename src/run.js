@@ -8,7 +8,7 @@ import { selectReviewers } from "./select.js";
  * @typedef {Pick<typeof import('@actions/core'), 'info' | 'warning' | 'setOutput'>} Reporter
  * @typedef {{ eventName: string, payload: (typeof import('@actions/github').context)['payload'] }} EventContext
  * @typedef {{ number: number, author: string, isDraft: boolean, requestedUsers: Set<string>, reviewedUsers: Set<string> }} PullSnapshot
- * @typedef {{ kind: 'ignored' } | { kind: 'draft' } | { kind: 'no-candidates', team: string } | { kind: 'requested', reviewers: string[] }} Outcome
+ * @typedef {{ kind: 'ignored' } | { kind: 'draft' } | { kind: 'no-candidates', team: string } | { kind: 'already-assigned', reviewers: string[] } | { kind: 'requested', reviewers: string[] }} Outcome
  */
 
 /**
@@ -55,6 +55,11 @@ async function assignment(settings, context, client, reporter, random) {
     reviewedUsers: new Set(reviews.filter(review => review.submitted_at && review.user).map(review => review.user?.login.toLowerCase() ?? "")),
   };
   const members = await teamMembers(config, client);
+  if (ready) {
+    const reviewers = [...new Set(members.map(member => member.login.toLowerCase()))]
+      .filter(login => login !== snapshot.author && (snapshot.requestedUsers.has(login) || snapshot.reviewedUsers.has(login)));
+    if (reviewers.length) return { kind: "already-assigned", reviewers };
+  }
   const excluded = new Set([
     ...config.exclude, snapshot.author, payload.sender.login.toLowerCase(),
     ...snapshot.requestedUsers, ...snapshot.reviewedUsers,
@@ -85,7 +90,7 @@ async function assignment(settings, context, client, reporter, random) {
  */
 async function readRotation(settings, head, base, client, reporter) {
   const { org: owner, repo, configPath: path } = settings;
-  for (const ref of [head, base]) {
+  for (const ref of [base, head]) {
     let data;
     try {
       ({ data } = await client.rest.repos.getContent({ owner, repo, path, ref }));
@@ -100,7 +105,7 @@ async function readRotation(settings, head, base, client, reporter) {
     reporter.info(`Read config ${path} at ${ref}.`);
     return rotation;
   }
-  throw new Error(`Config file ${path} was not found at head ${head} or base ${base}.`);
+  throw new Error(`Config file ${path} was not found at base ${base} or head ${head}.`);
 }
 
 /**
@@ -139,6 +144,9 @@ async function reportOutcome(outcome, config, number, client, reporter) {
   switch (outcome.kind) {
     case "ignored":
       reporter.info("Ignoring event. Review assignment requires the configured label on a pull_request labeled or ready_for_review event.");
+      return;
+    case "already-assigned":
+      reporter.info(`Review already assigned to ${outcome.reviewers.join(", ")}.`);
       return;
     case "draft":
       await client.rest.issues.createComment({
