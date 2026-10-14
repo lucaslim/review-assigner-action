@@ -14,7 +14,7 @@ function fixture(overrides = {}) {
   const method = (name, data) => async (params) => {
     calls.push([name, params]);
     if (name === "members" && records.teamError) throw records.teamError;
-    if (name === "config" && (records.configError || records.headConfigError && params.ref === "fresh-head-sha")) throw records.configError ?? records.headConfigError;
+    if (name === "config" && (records.configError || records.baseConfigError && params.ref === "main")) throw records.configError ?? records.baseConfigError;
     return { data: typeof data === "function" ? data(params) : data };
   };
   const client = {
@@ -74,7 +74,7 @@ test("happy path requests the lowest-load member using fresh state", async () =>
   ]);
   assert.deepEqual(f.calls.filter(([name]) => !["info", "output"].includes(name)), [
     ["get", { owner: "acme", repo: "app", pull_number: 42 }],
-    ["config", { owner: "acme", repo: "app", path: ".github/review-assigner.yml", ref: "fresh-head-sha" }],
+    ["config", { owner: "acme", repo: "app", path: ".github/review-assigner.yml", ref: "main" }],
     ["reviews", { owner: "acme", repo: "app", pull_number: 42, per_page: 100 }],
     ["members", { org: "acme", team_slug: "frontend", per_page: 100 }],
     ["pulls", { owner: "acme", repo: "app", state: "open", per_page: 100 }],
@@ -124,6 +124,60 @@ test("ready_for_review with the label requests a reviewer and excludes the sende
   assert.deepEqual(await execute(f), { kind: "requested", reviewers: ["bob"] });
   assert.deepEqual(effects(f), [["request", { owner: "acme", repo: "app", pull_number: 42, reviewers: ["bob"] }], ["output", "reviewers", "bob"]]);
 });
+test("ready_for_review with a requested team member does not assign another reviewer", async () => {
+  const f = fixture({ configFile: "team: frontend\nexclude: [alice]" });
+  f.context.payload.action = "ready_for_review";
+  f.context.payload.sender.login = "alice";
+  f.client.rest.pulls.get = async () => ({ data: {
+    number: 42, user: { login: "author" }, draft: false,
+    head: { sha: "fresh-head-sha" }, base: { ref: "main" },
+    labels: [{ name: "needs-review" }], requested_reviewers: [{ login: "ALICE" }],
+  } });
+  assert.deepEqual(await execute(f), { kind: "already-assigned", reviewers: ["alice"] });
+  assert.deepEqual(effects(f), [["output", "reviewers", ""]]);
+  assert.deepEqual(f.calls.filter(([name]) => name === "info"), [
+    ["info", "Read config .github/review-assigner.yml at main."],
+    ["info", "Review already assigned to alice."],
+  ]);
+});
+test("ready_for_review with a submitted team review does not assign another reviewer", async () => {
+  const f = fixture({ reviews: [{ user: { login: "ALICE" }, submitted_at: "2026-04-01", state: "COMMENTED" }] });
+  f.context.payload.action = "ready_for_review";
+  assert.deepEqual(await execute(f), { kind: "already-assigned", reviewers: ["alice"] });
+  assert.deepEqual(effects(f), [["output", "reviewers", ""]]);
+  assert.deepEqual(f.calls.filter(([name]) => name === "info"), [
+    ["info", "Read config .github/review-assigner.yml at main."],
+    ["info", "Review already assigned to alice."],
+  ]);
+});
+test("ready_for_review still assigns when only outsiders or the author are requested or reviewed", async () => {
+  for (const login of ["outsider", "AUTHOR"]) {
+    const f = fixture({
+      members: [{ login: "author", type: "User" }, { login: "alice", type: "User" }, { login: "bob", type: "User" }],
+      reviews: [{ user: { login }, submitted_at: "2026-04-01", state: "APPROVED" }],
+    });
+    f.context.payload.action = "ready_for_review";
+    f.client.rest.pulls.get = async () => ({ data: {
+      number: 42, user: { login: "author" }, draft: false,
+      head: { sha: "fresh-head-sha" }, base: { ref: "main" },
+      labels: [{ name: "needs-review" }], requested_reviewers: [{ login }],
+    } });
+    assert.deepEqual(await execute(f), { kind: "requested", reviewers: ["alice"] });
+    assert.deepEqual(effects(f), [
+      ["request", { owner: "acme", repo: "app", pull_number: 42, reviewers: ["alice"] }],
+      ["output", "reviewers", "alice"],
+    ]);
+  }
+});
+test("ready_for_review ignores pending unsubmitted reviews", async () => {
+  const f = fixture({ reviews: [{ user: { login: "alice" }, submitted_at: null, state: "PENDING" }] });
+  f.context.payload.action = "ready_for_review";
+  assert.deepEqual(await execute(f), { kind: "requested", reviewers: ["alice"] });
+  assert.deepEqual(effects(f), [
+    ["request", { owner: "acme", repo: "app", pull_number: 42, reviewers: ["alice"] }],
+    ["output", "reviewers", "alice"],
+  ]);
+});
 test("ready_for_review without the payload label is ignored without API calls", async () => {
   const f = fixture();
   f.context.payload.action = "ready_for_review";
@@ -148,42 +202,42 @@ test("review request failures do not publish successful output", async () => {
   assert.deepEqual(effects(f), []);
 });
 
-test("config loads at the fresh PR head using the configured path", async () => {
+test("config uses the base copy without fetching the head using the configured path", async () => {
   const f = fixture({ inputs: { configPath: "rotation.yml" }, configFile: "team: frontend\nexclude: [ALICE]" });
   assert.deepEqual(await execute(f), { kind: "requested", reviewers: ["bob"] });
-  assert.deepEqual(f.calls.find(([name]) => name === "config"), ["config", {
-    owner: "acme", repo: "app", path: "rotation.yml", ref: "fresh-head-sha",
-  }]);
+  assert.deepEqual(f.calls.filter(([name]) => name === "config"), [["config", {
+    owner: "acme", repo: "app", path: "rotation.yml", ref: "main",
+  }]]);
   assert.deepEqual(f.calls.filter(([name]) => name === "info"), [
-    ["info", "Read config rotation.yml at fresh-head-sha."],
+    ["info", "Read config rotation.yml at main."],
     ["info", "Requested review from bob."],
   ]);
 });
-test("head 404 falls back to the base branch and logs its ref", async () => {
-  const f = fixture({ headConfigError: Object.assign(new Error("Not Found"), { status: 404 }) });
+test("base 404 falls back to the head commit and logs its ref", async () => {
+  const f = fixture({ baseConfigError: Object.assign(new Error("Not Found"), { status: 404 }) });
   assert.deepEqual(await execute(f), { kind: "requested", reviewers: ["alice"] });
   assert.deepEqual(f.calls.filter(([name]) => name === "config"), [
-    ["config", { owner: "acme", repo: "app", path: ".github/review-assigner.yml", ref: "fresh-head-sha" }],
     ["config", { owner: "acme", repo: "app", path: ".github/review-assigner.yml", ref: "main" }],
+    ["config", { owner: "acme", repo: "app", path: ".github/review-assigner.yml", ref: "fresh-head-sha" }],
   ]);
   assert.deepEqual(f.calls.filter(([name]) => name === "info"), [
-    ["info", "Read config .github/review-assigner.yml at main."],
+    ["info", "Read config .github/review-assigner.yml at fresh-head-sha."],
     ["info", "Requested review from alice."],
   ]);
 });
 test("missing config names the path and both refs and requests nobody", async () => {
   const f = fixture({ configError: Object.assign(new Error("Not Found"), { status: 404 }) });
-  await assert.rejects(execute(f), { message: "Config file .github/review-assigner.yml was not found at head fresh-head-sha or base main." });
+  await assert.rejects(execute(f), { message: "Config file .github/review-assigner.yml was not found at base main or head fresh-head-sha." });
   assert.deepEqual(f.calls, [
     ["get", { owner: "acme", repo: "app", pull_number: 42 }],
-    ["config", { owner: "acme", repo: "app", path: ".github/review-assigner.yml", ref: "fresh-head-sha" }],
     ["config", { owner: "acme", repo: "app", path: ".github/review-assigner.yml", ref: "main" }],
+    ["config", { owner: "acme", repo: "app", path: ".github/review-assigner.yml", ref: "fresh-head-sha" }],
   ]);
 });
 test("non-file config responses fail clearly", async () => {
   for (const contentResponse of [[], { type: "dir" }, { type: "symlink" }, { type: "file", encoding: "none", content: "" }]) {
     const f = fixture({ contentResponse });
-    await assert.rejects(execute(f), { message: "Config path .github/review-assigner.yml at fresh-head-sha must be a file with base64 content." });
+    await assert.rejects(execute(f), { message: "Config path .github/review-assigner.yml at main must be a file with base64 content." });
     assert.deepEqual(effects(f), []);
   }
 });
@@ -193,7 +247,7 @@ test("other config API errors propagate without falling back", async () => {
     await assert.rejects(execute(f), { message: "Unavailable" });
     assert.deepEqual(f.calls, [
       ["get", { owner: "acme", repo: "app", pull_number: 42 }],
-      ["config", { owner: "acme", repo: "app", path: ".github/review-assigner.yml", ref: "fresh-head-sha" }],
+      ["config", { owner: "acme", repo: "app", path: ".github/review-assigner.yml", ref: "main" }],
     ]);
   }
 });

@@ -55,7 +55,7 @@ test("real Octokit paginates members, reviews and open pulls before requesting r
     eventName: "pull_request", payload: { number: 42, action: "labeled", label: { name: "needs-review" }, sender: { login: "labeler" } },
   }, client, { info() {}, warning() {}, setOutput: (name, value) => outputs.push([name, value]) }), { kind: "requested", reviewers: ["bob"] });
   assert.deepEqual(outputs, [["reviewers", "bob"]]);
-  assert.deepEqual(requests.find(([, path]) => path.includes("/contents/")), ["GET", "/repos/acme/app/contents/.github/review-assigner.yml", { ref: "fresh-head-sha" }]);
+  assert.deepEqual(requests.find(([, path]) => path.includes("/contents/")), ["GET", "/repos/acme/app/contents/.github/review-assigner.yml", { ref: "main" }]);
   assert.deepEqual(requests.filter(([method]) => method === "body"), [["body", { reviewers: ["bob"] }]]);
   assert.deepEqual(requests.filter(([, , query]) => query?.page === "2"), [
     ["GET", "/repos/acme/app/pulls/42/reviews", { per_page: "100", page: "2" }],
