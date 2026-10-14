@@ -73,7 +73,7 @@ jobs:
           permission-issues: write
           permission-contents: read
           permission-members: read
-      - uses: lucaslim/review-assigner-action@v2.0.0
+      - uses: lucaslim/review-assigner-action@f42e792245448a6dbcd52ff778e42f4fc18c4a11 # v2.0.0
         with:
           token: ${{ steps.app-token.outputs.token }}
 ```
