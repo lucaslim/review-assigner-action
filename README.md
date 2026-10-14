@@ -56,7 +56,7 @@ jobs:
           permission-pull-requests: write
           permission-issues: write
           permission-members: read
-      - uses: lucaslim/review-assigner-action@v1.0.0
+      - uses: lucaslim/review-assigner-action@7bfa4bdfa51977a33a9400c2452bc5ed6a5eab67 # v1.0.0
         with:
           token: ${{ steps.app-token.outputs.token }}
           team: retail-frontend-codeowners
