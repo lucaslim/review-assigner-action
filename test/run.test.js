@@ -23,6 +23,7 @@ function fixture(overrides = {}) {
       pulls: {
         get: method("get", records.pull), listReviews: method("reviews", records.reviews),
         list: method("pulls", records.pulls), requestReviewers: method("request", {}),
+        removeRequestedReviewers: method("unrequest", {}),
       },
       teams: { listMembersInOrg: method("members", records.members) },
       issues: { listEventsForRepo: method("events", records.events), createComment: method("comment", {}) },
@@ -45,7 +46,7 @@ function fixture(overrides = {}) {
   return { config, context, client, core, calls };
 }
 const execute = f => run(f.config, f.context, f.client, f.core, () => 0.999);
-const effects = f => f.calls.filter(([name]) => ["comment", "request", "warning", "output"].includes(name));
+const effects = f => f.calls.filter(([name]) => ["comment", "request", "unrequest", "warning", "output"].includes(name));
 
 test("other labels, actions and event names are ignored without API calls", async () => {
   for (const change of [f => f.context.payload.label.name = "other", f => f.context.payload.action = "opened", f => f.context.eventName = "issues"]) {
@@ -195,8 +196,47 @@ test("ready_for_review confirms the label in fresh state", async () => {
     ["info", "Ignoring event. Review assignment requires the configured label on a pull_request labeled or ready_for_review event."],
   ]);
 });
-test("review request failures do not publish successful output", async () => {
-  const f = fixture();
+test("requesting a reviewer removes only the rotation team's request", async () => {
+  const f = fixture({ pull: { number: 42, user: { login: "author" }, draft: false, head: { sha: "fresh-head-sha" }, base: { ref: "main" }, requested_reviewers: [], requested_teams: [{ slug: "design" }, { slug: "frontend" }] } });
+  assert.deepEqual(await execute(f), { kind: "requested", reviewers: ["alice"], teamRequest: "frontend" });
+  assert.deepEqual(effects(f), [
+    ["request", { owner: "acme", repo: "app", pull_number: 42, reviewers: ["alice"] }],
+    ["unrequest", { owner: "acme", repo: "app", pull_number: 42, reviewers: [], team_reviewers: ["frontend"] }],
+    ["output", "reviewers", "alice"],
+  ]);
+  assert.deepEqual(f.calls.filter(([name]) => name === "info").at(-1), ["info", "Requested review from alice. Removed the review request for @acme/frontend."]);
+});
+test("ready_for_review with an assigned team member removes the rotation team's request", async () => {
+  const f = fixture({
+    reviews: [{ user: { login: "alice" }, submitted_at: "2026-04-01", state: "COMMENTED" }],
+    pull: { number: 42, user: { login: "author" }, draft: false, head: { sha: "fresh-head-sha" }, base: { ref: "main" }, labels: [{ name: "needs-review" }], requested_reviewers: [], requested_teams: [{ slug: "frontend" }] },
+  });
+  f.context.payload.action = "ready_for_review";
+  assert.deepEqual(await execute(f), { kind: "already-assigned", reviewers: ["alice"], teamRequest: "frontend" });
+  assert.deepEqual(effects(f), [
+    ["unrequest", { owner: "acme", repo: "app", pull_number: 42, reviewers: [], team_reviewers: ["frontend"] }],
+    ["output", "reviewers", ""],
+  ]);
+});
+test("a team request that GitHub refuses to remove warns and keeps the requested reviewer", async () => {
+  const f = fixture({ pull: { number: 42, user: { login: "author" }, draft: false, head: { sha: "fresh-head-sha" }, base: { ref: "main" }, requested_reviewers: [], requested_teams: [{ slug: "frontend" }] } });
+  f.client.rest.pulls.removeRequestedReviewers = async () => { throw Object.assign(new Error("Validation Failed"), { status: 422 }); };
+  assert.deepEqual(await execute(f), { kind: "requested", reviewers: ["alice"], teamRequest: "frontend" });
+  assert.deepEqual(effects(f), [
+    ["request", { owner: "acme", repo: "app", pull_number: 42, reviewers: ["alice"] }],
+    ["warning", "Could not remove the review request for @acme/frontend: Validation Failed. A branch protection rule requiring code owner review keeps code owner team requests."],
+    ["output", "reviewers", "alice"],
+  ]);
+  assert.deepEqual(f.calls.filter(([name]) => name === "info").at(-1), ["info", "Requested review from alice."]);
+});
+test("other team request removal errors fail the run", async () => {
+  const f = fixture({ pull: { number: 42, user: { login: "author" }, draft: false, head: { sha: "fresh-head-sha" }, base: { ref: "main" }, requested_reviewers: [], requested_teams: [{ slug: "frontend" }] } });
+  f.client.rest.pulls.removeRequestedReviewers = async () => { throw Object.assign(new Error("Unavailable"), { status: 500 }); };
+  await assert.rejects(execute(f), { message: "Unavailable" });
+  assert.deepEqual(effects(f), [["request", { owner: "acme", repo: "app", pull_number: 42, reviewers: ["alice"] }]]);
+});
+test("review request failures keep the team request and do not publish successful output", async () => {
+  const f = fixture({ pull: { number: 42, user: { login: "author" }, draft: false, head: { sha: "fresh-head-sha" }, base: { ref: "main" }, requested_reviewers: [], requested_teams: [{ slug: "frontend" }] } });
   f.client.rest.pulls.requestReviewers = async () => { throw new Error("Request failed"); };
   await assert.rejects(execute(f), { message: "Request failed" });
   assert.deepEqual(effects(f), []);

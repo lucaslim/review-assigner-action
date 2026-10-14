@@ -2,6 +2,8 @@
 
 Adding `needs-review` to a non-draft PR requests review from the least-loaded eligible member of a GitHub team. The label stays on the PR. Remove and re-add it to request another person. Each label addition requests up to `count` new reviewers. Marking a draft PR ready for review also requests reviewers if it has the label. If any team member other than the author is already requested or has submitted a review, the ready event requests nobody. It logs those members and posts no comment. Re-adding the label still requests more reviewers.
 
+When the PR has a pending review request for the configured team, for example from `CODEOWNERS`, the action removes that team request after requesting the selected reviewers or after the ready event finds an assigned team member. Only the person is left requested. Other team requests stay. If the reviewer request fails, the team request stays. A branch protection rule that requires code owner review can stop GitHub from removing a code owner team. If GitHub rejects the removal with 422, the action emits a warning and keeps the requested reviewer.
+
 Load is the number of open PRs in this repository currently requesting that person's review. Equal loads use a uniform random tie-break.
 
 The author, event sender, bots, excluded logins, current requested reviewers, and people who already submitted a review are ineligible. The event sender is the person who added the label or marked the PR ready. Draft PRs receive a comment explaining that assignment will happen when they are marked ready. If nobody is eligible, the action comments and emits a warning.
