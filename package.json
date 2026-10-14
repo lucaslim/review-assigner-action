@@ -1,0 +1,40 @@
+{
+  "name": "review-assigner-action",
+  "version": "1.0.0",
+  "description": "Assign GitHub team reviewers by current review load",
+  "main": "build/index.js",
+  "scripts": {
+    "build": "ncc build src/index.js -m -o build",
+    "test": "node --test",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
+  },
+  "repository": "git+https://github.com/lucaslim/review-assigner-action.git",
+  "keywords": [
+    "github",
+    "actions"
+  ],
+  "author": "Lucas L.",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/lucaslim/review-assigner-action/issues"
+  },
+  "homepage": "https://github.com/lucaslim/review-assigner-action#readme",
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.19.1",
+    "@vercel/ncc": "0.45.0",
+    "eslint": "10.12.0",
+    "globals": "17.13.0",
+    "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "@actions/core": "3.0.1",
+    "@actions/github": "9.1.1"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "yarn@1.22.22"
+}

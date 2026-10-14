@@ -1,0 +1,28 @@
+name: "Review Assigner Action"
+description: "Request reviews from GitHub team members by current review load"
+author: "Lucas L."
+
+inputs:
+  token:
+    description: "GitHub App token with Pull requests write, Issues write, and organization Members read"
+    required: true
+  team:
+    description: "Team slug in the repository owner's organization"
+    required: true
+  label:
+    description: "Label that triggers review assignment"
+    default: "needs-review"
+  count:
+    description: "Number of reviewers to request, as a positive integer"
+    default: "1"
+  exclude:
+    description: "Comma or newline separated logins to exclude"
+    required: false
+
+outputs:
+  reviewers:
+    description: "Comma-separated requested logins, or empty when nobody is requested"
+
+runs:
+  using: "node24"
+  main: "build/index.js"
