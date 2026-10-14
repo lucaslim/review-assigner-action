@@ -16,10 +16,11 @@ import { selectReviewers } from "./select.js";
  * @param {EventContext} context
  * @param {Client} client
  * @param {Reporter} reporter
+ * @param {() => number} [random]
  * @returns {Promise<Outcome>}
  */
-export async function run(config, context, client, reporter) {
-  const outcome = await assignment(config, context, client);
+export async function run(config, context, client, reporter, random = Math.random) {
+  const outcome = await assignment(config, context, client, reporter, random);
   await reportOutcome(outcome, config, context.payload.number ?? 0, client, reporter);
   return outcome;
 }
@@ -28,21 +29,24 @@ export async function run(config, context, client, reporter) {
  * @param {Settings} settings
  * @param {EventContext} context
  * @param {Client} client
+ * @param {Reporter} reporter
+ * @param {() => number} random
  * @returns {Promise<Outcome>}
  */
-async function assignment(settings, context, client) {
+async function assignment(settings, context, client, reporter, random) {
   const { payload } = context;
-  if (context.eventName !== "pull_request" || payload.action !== "labeled" || payload.label?.name !== settings.label) {
-    return { kind: "ignored" };
-  }
+  const labeled = payload.action === "labeled" && payload.label?.name === settings.label;
+  const ready = payload.action === "ready_for_review" && payload.pull_request?.labels?.some((/** @type {{ name: string }} */ label) => label.name === settings.label);
+  if (context.eventName !== "pull_request" || !(labeled || ready)) return { kind: "ignored" };
   if (typeof payload.number !== "number" || !Number.isSafeInteger(payload.number) || payload.number < 1 || !payload.sender?.login) {
-    throw new Error("The labeled event must include a pull request number and sender login");
+    throw new Error("The review assignment event must include a pull request number and sender login");
   }
   const repository = { owner: settings.org, repo: settings.repo };
   const pullParams = { ...repository, pull_number: payload.number };
   const { data: pull } = await client.rest.pulls.get(pullParams);
+  if (ready && !pull.labels.some(label => label.name === settings.label)) return { kind: "ignored" };
   if (pull.draft) return { kind: "draft" };
-  const config = { ...settings, ...await readRotation(settings, pull.head.sha, client) };
+  const config = { ...settings, ...await readRotation(settings, pull.head.sha, pull.base.ref, client, reporter) };
   const reviews = await client.paginate(client.rest.pulls.listReviews, { ...pullParams, per_page: 100 });
   /** @type {PullSnapshot} */
   const snapshot = {
@@ -68,31 +72,35 @@ async function assignment(settings, context, client) {
       load.set(login, (load.get(login) ?? 0) + 1);
     }
   }
-  const lastRequestedAt = await recentRequests(config, client);
-  const reviewers = selectReviewers({ members: eligible, excluded, load, lastRequestedAt, count: config.count });
+  const reviewers = selectReviewers({ members: eligible, excluded, load, random, count: config.count });
   return { kind: "requested", reviewers };
 }
 
 /**
  * @param {Settings} settings
- * @param {string} ref
+ * @param {string} head
+ * @param {string} base
  * @param {Client} client
+ * @param {Reporter} reporter
  */
-async function readRotation(settings, ref, client) {
+async function readRotation(settings, head, base, client, reporter) {
   const { org: owner, repo, configPath: path } = settings;
-  let data;
-  try {
-    ({ data } = await client.rest.repos.getContent({ owner, repo, path, ref }));
-  } catch (error) {
-    if (error && typeof error === "object" && "status" in error && error.status === 404) {
-      throw new Error(`Config file ${path} was not found at ${ref}. The file must exist on the PR branch.`, { cause: error });
+  for (const ref of [head, base]) {
+    let data;
+    try {
+      ({ data } = await client.rest.repos.getContent({ owner, repo, path, ref }));
+    } catch (error) {
+      if (error && typeof error === "object" && "status" in error && error.status === 404) continue;
+      throw error;
     }
-    throw error;
+    if (Array.isArray(data) || data.type !== "file" || !("content" in data) || data.encoding !== "base64") {
+      throw new Error(`Config path ${path} at ${ref} must be a file with base64 content.`);
+    }
+    const rotation = parseRotation(Buffer.from(data.content, "base64").toString("utf8"));
+    reporter.info(`Read config ${path} at ${ref}.`);
+    return rotation;
   }
-  if (Array.isArray(data) || data.type !== "file" || !("content" in data) || data.encoding !== "base64") {
-    throw new Error(`Config path ${path} at ${ref} must be a file with base64 content.`);
-  }
-  return parseRotation(Buffer.from(data.content, "base64").toString("utf8"));
+  throw new Error(`Config file ${path} was not found at head ${head} or base ${base}.`);
 }
 
 /**
@@ -113,29 +121,6 @@ async function teamMembers(config, client) {
 }
 
 /**
- * @param {Config} config
- * @param {Client} client
- * @returns {Promise<Map<string, Date | undefined>>}
- */
-async function recentRequests(config, client) {
-  const lastRequestedAt = new Map();
-  for (let page = 1; page <= 3; page++) {
-    const { data: events } = await client.rest.issues.listEventsForRepo({
-      owner: config.org, repo: config.repo, per_page: 100, page,
-    });
-    for (const event of events) {
-      if (event.event !== "review_requested" || !event.requested_reviewer) continue;
-      const login = event.requested_reviewer.login.toLowerCase();
-      const date = new Date(event.created_at);
-      const previous = lastRequestedAt.get(login);
-      if (!previous || date > previous) lastRequestedAt.set(login, date);
-    }
-    if (events.length < 100) break;
-  }
-  return lastRequestedAt;
-}
-
-/**
  * @param {Outcome} outcome
  * @param {Settings} config
  * @param {number} number
@@ -153,12 +138,12 @@ async function reportOutcome(outcome, config, number, client, reporter) {
   reporter.setOutput("reviewers", "");
   switch (outcome.kind) {
     case "ignored":
-      reporter.info("Ignoring event. Review assignment requires the configured label on a pull_request labeled event.");
+      reporter.info("Ignoring event. Review assignment requires the configured label on a pull_request labeled or ready_for_review event.");
       return;
     case "draft":
       await client.rest.issues.createComment({
         ...repository, issue_number: number,
-        body: `Review can be assigned once this pull request is marked ready for review. Then remove and re-add the "${config.label}" label.`,
+        body: "A reviewer will be requested when this pull request is marked ready for review.",
       });
       return;
     case "no-candidates": {

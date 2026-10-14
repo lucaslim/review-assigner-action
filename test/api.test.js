@@ -20,7 +20,7 @@ test("real Octokit paginates members, reviews and open pulls before requesting r
     }
     switch (url.pathname) {
       case "/repos/acme/app/pulls/42":
-        response.end(JSON.stringify({ number: 42, user: { login: "author" }, draft: false, head: { sha: "fresh-head-sha" }, requested_reviewers: [] }));
+        response.end(JSON.stringify({ number: 42, user: { login: "author" }, draft: false, head: { sha: "fresh-head-sha" }, base: { ref: "main" }, requested_reviewers: [] }));
         break;
       case "/repos/acme/app/contents/.github/review-assigner.yml":
         response.end(JSON.stringify({ type: "file", encoding: "base64", content: Buffer.from("team: frontend").toString("base64") }));
@@ -33,9 +33,6 @@ test("real Octokit paginates members, reviews and open pulls before requesting r
         break;
       case "/repos/acme/app/pulls":
         response.end(JSON.stringify(page === "1" ? [] : [{ requested_reviewers: [{ login: "alice" }] }]));
-        break;
-      case "/repos/acme/app/issues/events":
-        response.end("[]");
         break;
       case "/repos/acme/app/pulls/42/requested_reviewers": {
         let body = "";
