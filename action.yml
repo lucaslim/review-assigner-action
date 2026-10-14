@@ -4,20 +4,14 @@ author: "Lucas L."
 
 inputs:
   token:
-    description: "GitHub App token with Pull requests write, Issues write, and organization Members read"
-    required: true
-  team:
-    description: "Team slug in the repository owner's organization"
+    description: "GitHub App token with Pull requests write, Issues write, Contents read, and organization Members read"
     required: true
   label:
     description: "Label that triggers review assignment"
     default: "needs-review"
-  count:
-    description: "Number of reviewers to request, as a positive integer"
-    default: "1"
-  exclude:
-    description: "Comma or newline separated logins to exclude"
-    required: false
+  config-path:
+    description: "Path to the YAML rotation config on the PR branch"
+    default: ".github/review-assigner.yml"
 
 outputs:
   reviewers:

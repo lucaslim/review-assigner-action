@@ -1,34 +1,23 @@
 /**
  * @typedef {number & { readonly __positiveInt: unique symbol }} PositiveInt
- * @typedef {{ token: string, org: string, repo: string, team: string, label: string, count: PositiveInt, exclude: ReadonlySet<string> }} Config
+ * @typedef {{ token: string, org: string, repo: string, label: string, configPath: string }} Settings
+ * @typedef {Settings & { team: string, count: PositiveInt, exclude: ReadonlySet<string> }} Config
  * @typedef {{ members: readonly string[], excluded: ReadonlySet<string>, load: ReadonlyMap<string, number>, lastRequestedAt: ReadonlyMap<string, Date | undefined>, count: PositiveInt }} Selection
  */
 
 /**
- * @param {{ token: string, team: string, label?: string, count?: string, exclude?: string }} inputs
+ * @param {{ token: string, label?: string, configPath?: string }} inputs
  * @param {{ owner: string, repo: string }} repository
- * @returns {Config}
+ * @returns {Settings}
  */
-export function parseConfig(inputs, repository) {
+export function parseInputs(inputs, repository) {
   const token = inputs.token.trim();
-  const team = inputs.team.trim();
+  const configPath = (inputs.configPath ?? ".github/review-assigner.yml").trim();
   const label = (inputs.label ?? "needs-review").trim();
-  for (const [name, value] of Object.entries({ token, team, label })) {
+  for (const [name, value] of Object.entries({ token, configPath, label })) {
     if (!value) throw new Error(`${name} is required`);
   }
-  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/i.test(team)) {
-    throw new Error("team must be a team slug, not an org/team path");
-  }
-  const rawCount = inputs.count ?? "1";
-  const count = Number(rawCount);
-  if (!/^[0-9]+$/.test(rawCount) || !Number.isSafeInteger(count) || count < 1) {
-    throw new Error("count must be a positive safe integer");
-  }
-  return {
-    token, org: repository.owner, repo: repository.repo, team, label,
-    count: /** @type {PositiveInt} */ (count),
-    exclude: new Set((inputs.exclude ?? "").split(/[,\n]/).map(login => login.trim().toLowerCase()).filter(Boolean)),
-  };
+  return { token, org: repository.owner, repo: repository.repo, label, configPath };
 }
 
 /**

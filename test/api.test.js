@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { getOctokit } from "@actions/github";
-import { parseConfig } from "../src/select.js";
+import { parseInputs } from "../src/select.js";
 import { run } from "../src/run.js";
 
 test("real Octokit paginates members, reviews and open pulls before requesting review", async t => {
@@ -11,6 +11,7 @@ test("real Octokit paginates members, reviews and open pulls before requesting r
   const outputs = [];
   const server = createServer(async (request, response) => {
     const url = new URL(request.url, "http://localhost");
+    url.pathname = decodeURIComponent(url.pathname);
     requests.push([request.method, url.pathname, Object.fromEntries(url.searchParams)]);
     const page = url.searchParams.get("page") ?? "1";
     response.setHeader("content-type", "application/json");
@@ -19,7 +20,10 @@ test("real Octokit paginates members, reviews and open pulls before requesting r
     }
     switch (url.pathname) {
       case "/repos/acme/app/pulls/42":
-        response.end(JSON.stringify({ number: 42, user: { login: "author" }, draft: false, requested_reviewers: [] }));
+        response.end(JSON.stringify({ number: 42, user: { login: "author" }, draft: false, head: { sha: "fresh-head-sha" }, requested_reviewers: [] }));
+        break;
+      case "/repos/acme/app/contents/.github/review-assigner.yml":
+        response.end(JSON.stringify({ type: "file", encoding: "base64", content: Buffer.from("team: frontend").toString("base64") }));
         break;
       case "/orgs/acme/teams/frontend/members":
         response.end(JSON.stringify(page === "1" ? [{ login: "alice", type: "User" }] : [{ login: "bob", type: "User" }, { login: "carol", type: "User" }]));
@@ -48,12 +52,13 @@ test("real Octokit paginates members, reviews and open pulls before requesting r
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   t.after(() => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
-  const config = parseConfig({ token: "test-token", team: "frontend" }, { owner: "acme", repo: "app" });
+  const config = parseInputs({ token: "test-token" }, { owner: "acme", repo: "app" });
   const client = getOctokit(config.token, { baseUrl: `http://127.0.0.1:${server.address().port}` });
   assert.deepEqual(await run(config, {
     eventName: "pull_request", payload: { number: 42, action: "labeled", label: { name: "needs-review" }, sender: { login: "labeler" } },
   }, client, { info() {}, warning() {}, setOutput: (name, value) => outputs.push([name, value]) }), { kind: "requested", reviewers: ["bob"] });
   assert.deepEqual(outputs, [["reviewers", "bob"]]);
+  assert.deepEqual(requests.find(([, path]) => path.includes("/contents/")), ["GET", "/repos/acme/app/contents/.github/review-assigner.yml", { ref: "fresh-head-sha" }]);
   assert.deepEqual(requests.filter(([method]) => method === "body"), [["body", { reviewers: ["bob"] }]]);
   assert.deepEqual(requests.filter(([, , query]) => query?.page === "2"), [
     ["GET", "/repos/acme/app/pulls/42/reviews", { per_page: "100", page: "2" }],

@@ -1,16 +1,18 @@
+import { parseRotation } from "./config.js";
 import { selectReviewers } from "./select.js";
 
 /**
+ * @typedef {import('./select.js').Settings} Settings
  * @typedef {import('./select.js').Config} Config
  * @typedef {ReturnType<typeof import('@actions/github').getOctokit>} Client
  * @typedef {Pick<typeof import('@actions/core'), 'info' | 'warning' | 'setOutput'>} Reporter
  * @typedef {{ eventName: string, payload: (typeof import('@actions/github').context)['payload'] }} EventContext
  * @typedef {{ number: number, author: string, isDraft: boolean, requestedUsers: Set<string>, reviewedUsers: Set<string> }} PullSnapshot
- * @typedef {{ kind: 'ignored' } | { kind: 'draft' } | { kind: 'no-candidates' } | { kind: 'requested', reviewers: string[] }} Outcome
+ * @typedef {{ kind: 'ignored' } | { kind: 'draft' } | { kind: 'no-candidates', team: string } | { kind: 'requested', reviewers: string[] }} Outcome
  */
 
 /**
- * @param {Config} config
+ * @param {Settings} config
  * @param {EventContext} context
  * @param {Client} client
  * @param {Reporter} reporter
@@ -23,23 +25,24 @@ export async function run(config, context, client, reporter) {
 }
 
 /**
- * @param {Config} config
+ * @param {Settings} settings
  * @param {EventContext} context
  * @param {Client} client
  * @returns {Promise<Outcome>}
  */
-async function assignment(config, context, client) {
+async function assignment(settings, context, client) {
   const { payload } = context;
-  if (context.eventName !== "pull_request" || payload.action !== "labeled" || payload.label?.name !== config.label) {
+  if (context.eventName !== "pull_request" || payload.action !== "labeled" || payload.label?.name !== settings.label) {
     return { kind: "ignored" };
   }
   if (typeof payload.number !== "number" || !Number.isSafeInteger(payload.number) || payload.number < 1 || !payload.sender?.login) {
     throw new Error("The labeled event must include a pull request number and sender login");
   }
-  const repository = { owner: config.org, repo: config.repo };
+  const repository = { owner: settings.org, repo: settings.repo };
   const pullParams = { ...repository, pull_number: payload.number };
   const { data: pull } = await client.rest.pulls.get(pullParams);
   if (pull.draft) return { kind: "draft" };
+  const config = { ...settings, ...await readRotation(settings, pull.head.sha, client) };
   const reviews = await client.paginate(client.rest.pulls.listReviews, { ...pullParams, per_page: 100 });
   /** @type {PullSnapshot} */
   const snapshot = {
@@ -54,7 +57,7 @@ async function assignment(config, context, client) {
     ...members.filter(member => member.type === "Bot" || member.login.toLowerCase().endsWith("[bot]")).map(member => member.login.toLowerCase()),
   ]);
   const eligible = members.map(member => member.login.toLowerCase()).filter(login => !excluded.has(login));
-  if (!eligible.length) return { kind: "no-candidates" };
+  if (!eligible.length) return { kind: "no-candidates", team: config.team };
 
   const pulls = await client.paginate(client.rest.pulls.list, { ...repository, state: "open", per_page: 100 });
   /** @type {Map<string, number>} */
@@ -68,6 +71,28 @@ async function assignment(config, context, client) {
   const lastRequestedAt = await recentRequests(config, client);
   const reviewers = selectReviewers({ members: eligible, excluded, load, lastRequestedAt, count: config.count });
   return { kind: "requested", reviewers };
+}
+
+/**
+ * @param {Settings} settings
+ * @param {string} ref
+ * @param {Client} client
+ */
+async function readRotation(settings, ref, client) {
+  const { org: owner, repo, configPath: path } = settings;
+  let data;
+  try {
+    ({ data } = await client.rest.repos.getContent({ owner, repo, path, ref }));
+  } catch (error) {
+    if (error && typeof error === "object" && "status" in error && error.status === 404) {
+      throw new Error(`Config file ${path} was not found at ${ref}. The file must exist on the PR branch.`, { cause: error });
+    }
+    throw error;
+  }
+  if (Array.isArray(data) || data.type !== "file" || !("content" in data) || data.encoding !== "base64") {
+    throw new Error(`Config path ${path} at ${ref} must be a file with base64 content.`);
+  }
+  return parseRotation(Buffer.from(data.content, "base64").toString("utf8"));
 }
 
 /**
@@ -112,7 +137,7 @@ async function recentRequests(config, client) {
 
 /**
  * @param {Outcome} outcome
- * @param {Config} config
+ * @param {Settings} config
  * @param {number} number
  * @param {Client} client
  * @param {Reporter} reporter
@@ -137,7 +162,7 @@ async function reportOutcome(outcome, config, number, client, reporter) {
       });
       return;
     case "no-candidates": {
-      const body = `No eligible member of @${config.org}/${config.team} was found. All members are excluded, already requested, have already reviewed, are the PR author or labeler, or are bots.`;
+      const body = `No eligible member of @${config.org}/${outcome.team} was found. All members are excluded in ${config.configPath}, already requested, have already reviewed, are the PR author or labeler, or are bots.`;
       await client.rest.issues.createComment({ ...repository, issue_number: number, body });
       reporter.warning(body);
     }

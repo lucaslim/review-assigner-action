@@ -1,15 +1,13 @@
 import * as core from "@actions/core";
 import * as github from "@actions/github";
-import { parseConfig } from "./select.js";
+import { parseInputs } from "./select.js";
 import { run } from "./run.js";
 
 async function main() {
-  const config = parseConfig({
+  const config = parseInputs({
     token: core.getInput("token", { required: true }),
-    team: core.getInput("team", { required: true }),
     label: core.getInput("label"),
-    count: core.getInput("count"),
-    exclude: core.getInput("exclude"),
+    configPath: core.getInput("config-path"),
   }, github.context.repo);
   await run(config, github.context, github.getOctokit(config.token), core);
 }
