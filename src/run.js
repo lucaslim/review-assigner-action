@@ -8,7 +8,7 @@ import { selectReviewers } from "./select.js";
  * @typedef {Pick<typeof import('@actions/core'), 'info' | 'warning' | 'setOutput'>} Reporter
  * @typedef {{ eventName: string, payload: (typeof import('@actions/github').context)['payload'] }} EventContext
  * @typedef {{ number: number, author: string, isDraft: boolean, requestedUsers: Set<string>, reviewedUsers: Set<string> }} PullSnapshot
- * @typedef {{ kind: 'ignored' } | { kind: 'draft' } | { kind: 'no-candidates', team: string } | { kind: 'already-assigned', reviewers: string[] } | { kind: 'requested', reviewers: string[] }} Outcome
+ * @typedef {{ kind: 'ignored' } | { kind: 'draft' } | { kind: 'no-candidates', team: string } | { kind: 'already-assigned', reviewers: string[], teamRequest?: string } | { kind: 'requested', reviewers: string[], teamRequest?: string }} Outcome
  */
 
 /**
@@ -54,11 +54,12 @@ async function assignment(settings, context, client, reporter, random) {
     requestedUsers: new Set((pull.requested_reviewers ?? []).map(user => user.login.toLowerCase())),
     reviewedUsers: new Set(reviews.filter(review => review.submitted_at && review.user).map(review => review.user?.login.toLowerCase() ?? "")),
   };
+  const teamRequest = pull.requested_teams?.find(team => team.slug === config.team)?.slug;
   const members = await teamMembers(config, client);
   if (ready) {
     const reviewers = [...new Set(members.map(member => member.login.toLowerCase()))]
       .filter(login => login !== snapshot.author && (snapshot.requestedUsers.has(login) || snapshot.reviewedUsers.has(login)));
-    if (reviewers.length) return { kind: "already-assigned", reviewers };
+    if (reviewers.length) return { kind: "already-assigned", reviewers, ...teamRequest && { teamRequest } };
   }
   const excluded = new Set([
     ...config.exclude, snapshot.author, payload.sender.login.toLowerCase(),
@@ -78,7 +79,7 @@ async function assignment(settings, context, client, reporter, random) {
     }
   }
   const reviewers = selectReviewers({ members: eligible, excluded, load, random, count: config.count });
-  return { kind: "requested", reviewers };
+  return { kind: "requested", reviewers, ...teamRequest && { teamRequest } };
 }
 
 /**
@@ -136,17 +137,19 @@ async function reportOutcome(outcome, config, number, client, reporter) {
   const repository = { owner: config.org, repo: config.repo };
   if (outcome.kind === "requested") {
     await client.rest.pulls.requestReviewers({ ...repository, pull_number: number, reviewers: outcome.reviewers });
+    const removed = await removeTeamRequest(outcome.teamRequest, config, number, client, reporter);
     reporter.setOutput("reviewers", outcome.reviewers.join(","));
-    reporter.info(`Requested review from ${outcome.reviewers.join(", ")}.`);
+    reporter.info(`Requested review from ${outcome.reviewers.join(", ")}.${removed}`);
     return;
   }
+  const removed = outcome.kind === "already-assigned" ? await removeTeamRequest(outcome.teamRequest, config, number, client, reporter) : "";
   reporter.setOutput("reviewers", "");
   switch (outcome.kind) {
     case "ignored":
       reporter.info("Ignoring event. Review assignment requires the configured label on a pull_request labeled or ready_for_review event.");
       return;
     case "already-assigned":
-      reporter.info(`Review already assigned to ${outcome.reviewers.join(", ")}.`);
+      reporter.info(`Review already assigned to ${outcome.reviewers.join(", ")}.${removed}`);
       return;
     case "draft":
       await client.rest.issues.createComment({
@@ -160,4 +163,24 @@ async function reportOutcome(outcome, config, number, client, reporter) {
       reporter.warning(body);
     }
   }
+}
+
+/**
+ * @param {string | undefined} team
+ * @param {Settings} config
+ * @param {number} number
+ * @param {Client} client
+ * @param {Reporter} reporter
+ * @returns {Promise<string>} Suffix for the outcome log line.
+ */
+async function removeTeamRequest(team, config, number, client, reporter) {
+  if (!team) return "";
+  try {
+    await client.rest.pulls.removeRequestedReviewers({ owner: config.org, repo: config.repo, pull_number: number, reviewers: [], team_reviewers: [team] });
+  } catch (error) {
+    if (!(error instanceof Error && "status" in error && error.status === 422)) throw error;
+    reporter.warning(`Could not remove the review request for @${config.org}/${team}: ${error.message}. A branch protection rule requiring code owner review keeps code owner team requests.`);
+    return "";
+  }
+  return ` Removed the review request for @${config.org}/${team}.`;
 }
