@@ -11,12 +11,27 @@ The author, labeler, bots, excluded logins, current requested reviewers, and peo
 | Input | Required | Default | Meaning |
 | --- | --- | --- | --- |
 | `token` | Yes | | GitHub App installation token. |
-| `team` | Yes | | Team slug in the repository owner's organization. |
 | `label` | No | `needs-review` | Label that triggers assignment. |
-| `count` | No | `1` | Positive integer of reviewers to request. If fewer are eligible, all are requested. |
-| `exclude` | No | | Comma or newline separated logins, matched without case sensitivity. |
+| `config-path` | No | `.github/review-assigner.yml` | YAML rotation config path on the PR branch. |
 
-The `reviewers` output contains comma-separated requested logins. It is empty when the event is ignored, the PR is a draft, or nobody is eligible. API errors and invalid inputs fail the run.
+The `reviewers` output contains comma-separated requested logins. It is empty when the event is ignored, the PR is a draft, or nobody is eligible. API errors and invalid configuration fail the run.
+
+## Config file
+
+v2 removes the `team`, `count`, and `exclude` inputs and reads them from a YAML config file instead.
+
+Add `.github/review-assigner.yml` to the consumer repository:
+
+```yaml
+team: retail-frontend-codeowners
+count: 1
+exclude:
+  - someone
+```
+
+`team` is required and must be a team slug in the repository owner's organization, not an organization/team path. `count` defaults to `1` and must be a positive safe integer. If fewer members are eligible, the action requests all of them. `exclude` defaults to an empty list and must be a list of logins, matched without case sensitivity.
+
+The action reads the file at the fresh PR head commit, after checking that the PR is not a draft. The file must exist on the PR branch. Empty files, non-mapping documents, unknown keys, and wrong value types fail the run before any review request.
 
 ## Required app permissions
 
@@ -24,9 +39,10 @@ Install the GitHub App in the repository owner's organization with these permiss
 
 - Repository Pull requests, write.
 - Repository Issues, write.
+- Repository Contents, read.
 - Organization Members, read.
 
-The installation token must retain all three permissions. `GITHUB_TOKEN` cannot read organization team membership. Eligible members also need access to the repository.
+The installation token must retain all four permissions. `GITHUB_TOKEN` cannot read organization team membership. Eligible members also need access to the repository.
 
 ## Usage
 
@@ -55,15 +71,15 @@ jobs:
           repositories: ${{ github.event.repository.name }}
           permission-pull-requests: write
           permission-issues: write
+          permission-contents: read
           permission-members: read
-      - uses: lucaslim/review-assigner-action@7bfa4bdfa51977a33a9400c2452bc5ed6a5eab67 # v1.0.0
+      - uses: lucaslim/review-assigner-action@v2.0.0
         with:
           token: ${{ steps.app-token.outputs.token }}
-          team: retail-frontend-codeowners
 ```
 
 ## Development
 
 Use Node 24 and Yarn 1.22.22. Run `yarn install --frozen-lockfile`, `yarn lint`, `yarn typecheck`, `yarn test`, and `yarn build`. Tests use fake Octokit calls and a local HTTP server with real Octokit pagination.
 
-As in `lucaslim/pull-request-limiter-action`, `build/` is ignored on `main` and committed on a detached release commit. Release tags contain `build/index.js`; `main` is not a runnable action ref. `v1.0.0` is the fixed version and `v1` is the major-version ref.
+As in `lucaslim/pull-request-limiter-action`, `build/` is ignored on `main` and committed on a detached release commit. Release tags contain `build/index.js`; `main` is not a runnable action ref. `v2.0.0` is the fixed version and `v2` is the major-version ref. The `v1.0.0` and `v1` tags remain available for v1 consumers.
